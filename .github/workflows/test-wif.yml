@@ -187,7 +187,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          from agent.anthropic_adapter import exchange_anthropic_wif_for_access_token, build_anthropic_client
+          from agent.anthropic_adapter import exchange_anthropic_wif_for_access_token, build_anthropic_client, build_anthropic_kwargs
           token = exchange_anthropic_wif_for_access_token()["access_token"]
           client = build_anthropic_client(token, "https://api.anthropic.com", force_bearer_auth=True)
           msg = client.messages.create(
@@ -195,7 +195,31 @@ jobs:
               max_tokens=8,
               messages=[{"role": "user", "content": "Reply with only: WIF OK"}],
           )
-          print(msg.content[0].text)
+          print('simple:', msg.content[0].text)
+          kwargs = build_anthropic_kwargs(
+              model="${{ inputs.model }}",
+              messages=[{"role": "user", "content": "Reply with only: WIF OK"}],
+              tools=None,
+              max_tokens=8,
+              reasoning_config=None,
+              is_oauth=True,
+              base_url="https://api.anthropic.com",
+          )
+          msg = client.messages.create(**kwargs)
+          print('oauth_kwargs_no_tools:', msg.content[0].text)
+          tool = [{"type": "function", "function": {"name": "noop", "description": "Do nothing", "parameters": {"type": "object", "properties": {}}}}]
+          kwargs = build_anthropic_kwargs(
+              model="${{ inputs.model }}",
+              messages=[{"role": "user", "content": "Reply with only: WIF OK"}],
+              tools=tool,
+              max_tokens=8,
+              reasoning_config=None,
+              tool_choice="auto",
+              is_oauth=True,
+              base_url="https://api.anthropic.com",
+          )
+          msg = client.messages.create(**kwargs)
+          print('oauth_kwargs_tools:', msg.content[0].text)
           PY
 
       - name: Refresh GitHub OIDC token after SDK smoke test
