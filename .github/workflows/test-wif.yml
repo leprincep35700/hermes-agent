@@ -220,6 +220,18 @@ jobs:
           )
           msg = client.messages.create(**kwargs)
           print('oauth_kwargs_tools:', msg.content[0].text)
+          kwargs = build_anthropic_kwargs(
+              model="${{ inputs.model }}",
+              messages=[{"role": "user", "content": "Reply with only: WIF OK"}],
+              tools=tool,
+              max_tokens=8192,
+              reasoning_config={"enabled": True, "effort": "medium"},
+              tool_choice="auto",
+              is_oauth=True,
+              base_url="https://api.anthropic.com",
+          )
+          msg = client.messages.create(**kwargs)
+          print('oauth_kwargs_tools_thinking:', msg.content[0].text)
           PY
 
       - name: Refresh GitHub OIDC token after SDK smoke test
