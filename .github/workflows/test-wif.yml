@@ -1,0 +1,119 @@
+name: Test WIF Anthropic
+
+on:
+  workflow_dispatch:
+    inputs:
+      audience:
+        description: "OIDC audience configured in the Anthropic federation rule"
+        required: true
+        default: "anthropic"
+      model:
+        description: "Anthropic model for optional smoke test"
+        required: true
+        default: "claude-sonnet-4-5"
+      run_smoke_test:
+        description: "Also call Anthropic Messages API after token exchange"
+        required: true
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  test-wif:
+    runs-on: ubuntu-latest
+    env:
+      ANTHROPIC_ORGANIZATION_ID: 4ffd071c-2a30-48ac-872f-24554fede34b
+      ANTHROPIC_SERVICE_ACCOUNT_ID: svac_01LApMkSXS9TdaMfcR7LFXpH
+      ANTHROPIC_FEDERATION_RULE_ID: fdrl_019iNg9SddG3pXtoiLgtKFUz
+    steps:
+      - name: Get GitHub OIDC token
+        shell: bash
+        run: |
+          set -euo pipefail
+          response=$(curl -fsSL \
+            -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${{ inputs.audience }}")
+          token=$(jq -r '.value' <<<"$response")
+          if [ -z "$token" ] || [ "$token" = "null" ]; then
+            echo "GitHub did not return an OIDC token" >&2
+            exit 1
+          fi
+          echo "::add-mask::$token"
+          printf '%s' "$token" > /tmp/github-oidc.jwt
+          chmod 600 /tmp/github-oidc.jwt
+          echo "OIDC token written to /tmp/github-oidc.jwt"
+
+      - name: Exchange JWT for Anthropic access token
+        id: exchange
+        shell: bash
+        run: |
+          set -euo pipefail
+          payload=$(python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          print(json.dumps({
+              "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
+              "assertion": Path("/tmp/github-oidc.jwt").read_text(),
+              "federation_rule_id": os.environ["ANTHROPIC_FEDERATION_RULE_ID"],
+              "organization_id": os.environ["ANTHROPIC_ORGANIZATION_ID"],
+              "service_account_id": os.environ["ANTHROPIC_SERVICE_ACCOUNT_ID"],
+          }))
+          PY
+          )
+
+          response_file=/tmp/anthropic-token-response.json
+          http_code=$(curl -sS -o "$response_file" -w '%{http_code}' \
+            -X POST https://api.anthropic.com/v1/oauth/token \
+            -H "Content-Type: application/json" \
+            -d "$payload")
+
+          access_token=$(jq -r '.access_token // empty' "$response_file")
+          if [ -n "$access_token" ]; then
+            echo "::add-mask::$access_token"
+          fi
+
+          echo "HTTP status: $http_code"
+          jq 'if .access_token then .access_token="[REDACTED]" else . end
+              | if .refresh_token then .refresh_token="[REDACTED]" else . end
+              | if .id_token then .id_token="[REDACTED]" else . end' "$response_file"
+
+          if [[ "$http_code" != 2* ]]; then
+            echo "Anthropic token exchange failed" >&2
+            exit 1
+          fi
+          if [ -z "$access_token" ]; then
+            echo "Anthropic response did not include access_token" >&2
+            exit 1
+          fi
+
+          printf '%s' "$access_token" > /tmp/anthropic-access-token
+          chmod 600 /tmp/anthropic-access-token
+          echo "exchange_ok=true" >> "$GITHUB_OUTPUT"
+
+      - name: Optional Claude smoke test
+        if: ${{ inputs.run_smoke_test == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          access_token=$(cat /tmp/anthropic-access-token)
+          response_file=/tmp/anthropic-message-response.json
+          http_code=$(curl -sS -o "$response_file" -w '%{http_code}' \
+            -X POST https://api.anthropic.com/v1/messages \
+            -H "Authorization: Bearer ${access_token}" \
+            -H "Content-Type: application/json" \
+            -H "anthropic-version: 2023-06-01" \
+            -H "anthropic-beta: oauth-2025-04-20,claude-code-20250219" \
+            -d "$(jq -n --arg model '${{ inputs.model }}' '{model: $model, max_tokens: 8, messages: [{role: "user", content: "Reply with only: WIF OK"}]}')")
+
+          echo "HTTP status: $http_code"
+          jq . "$response_file"
+          if [[ "$http_code" != 2* ]]; then
+            echo "Claude smoke test failed" >&2
+            exit 1
+          fi
