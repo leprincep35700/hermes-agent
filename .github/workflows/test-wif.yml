@@ -196,9 +196,14 @@ jobs:
           echo "Hermes auth status for anthropic:"
           hermes auth status anthropic || hermes auth list anthropic || true
 
+          set +e
           hermes chat --ignore-user-config --ignore-rules --provider anthropic -m "${{ inputs.model }}" -Q -q "Reply with only: WIF OK" | tee "$RUNNER_TEMP/hermes-chat.out"
-          if grep -q "HTTP Error\|Unauthorized\|Authentication failed" "$RUNNER_TEMP/hermes-chat.out"; then
+          status=${PIPESTATUS[0]}
+          set -e
+          if [ "$status" -ne 0 ] || grep -q "HTTP Error\|Unauthorized\|Authentication failed" "$RUNNER_TEMP/hermes-chat.out"; then
             echo "Hermes chat reported an auth error" >&2
+            echo "Hermes logs:" >&2
+            find "$HERMES_HOME" -maxdepth 3 -type f -name '*.log' -print -exec tail -n 80 {} \; >&2 || true
             exit 1
           fi
           grep -q "WIF OK" "$RUNNER_TEMP/hermes-chat.out"
