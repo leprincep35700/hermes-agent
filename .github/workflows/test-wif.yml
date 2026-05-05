@@ -75,6 +75,7 @@ jobs:
           PY
 
       - name: Exchange JWT for Anthropic access token directly
+        if: ${{ inputs.run_direct_smoke_test == 'true' && inputs.run_hermes_e2e != 'true' }}
         id: exchange
         shell: bash
         run: |
@@ -123,7 +124,7 @@ jobs:
           echo "exchange_ok=true" >> "$GITHUB_OUTPUT"
 
       - name: Direct Claude smoke test
-        if: ${{ inputs.run_direct_smoke_test == 'true' }}
+        if: ${{ inputs.run_direct_smoke_test == 'true' && inputs.run_hermes_e2e != 'true' }}
         shell: bash
         run: |
           set -euo pipefail
