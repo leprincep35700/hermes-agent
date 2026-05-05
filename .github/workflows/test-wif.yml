@@ -48,6 +48,17 @@ jobs:
           printf '%s' "$token" > /tmp/github-oidc.jwt
           chmod 600 /tmp/github-oidc.jwt
           echo "OIDC token written to /tmp/github-oidc.jwt"
+          python3 - <<'PY'
+          import base64, json
+          from pathlib import Path
+          token = Path('/tmp/github-oidc.jwt').read_text().strip()
+          payload = token.split('.')[1]
+          payload += '=' * (-len(payload) % 4)
+          claims = json.loads(base64.urlsafe_b64decode(payload.encode()))
+          keep = ['iss', 'aud', 'sub', 'repository', 'repository_owner', 'ref', 'workflow', 'event_name', 'job_workflow_ref']
+          print('OIDC claims for Anthropic rule matching:')
+          print(json.dumps({k: claims.get(k) for k in keep if k in claims}, indent=2))
+          PY
 
       - name: Exchange JWT for Anthropic access token
         id: exchange
