@@ -7,12 +7,24 @@ on:
         description: "OIDC audience configured in the Anthropic federation rule"
         required: true
         default: "anthropic"
+      hermes_ref:
+        description: "Hermes branch/ref to checkout for Hermes CLI E2E"
+        required: true
+        default: "feat/anthropic-wif-auth"
       model:
-        description: "Anthropic model for optional smoke test"
+        description: "Anthropic model for smoke tests"
         required: true
         default: "claude-sonnet-4-5"
-      run_smoke_test:
-        description: "Also call Anthropic Messages API after token exchange"
+      run_direct_smoke_test:
+        description: "Call Anthropic Messages API directly after token exchange"
+        required: true
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
+      run_hermes_e2e:
+        description: "Install this Hermes ref and test hermes auth/chat through WIF"
         required: true
         default: "true"
         type: choice
@@ -31,6 +43,8 @@ jobs:
       ANTHROPIC_ORGANIZATION_ID: 4ffd071c-2a30-48ac-872f-24554fede34b
       ANTHROPIC_SERVICE_ACCOUNT_ID: svac_01LApMkSXS9TdaMfcR7LFXpH
       ANTHROPIC_FEDERATION_RULE_ID: fdrl_019iNg9SddG3pXtoiLgtKFUz
+      HERMES_HOME: ${{ runner.temp }}/hermes-home
+      ANTHROPIC_IDENTITY_TOKEN_FILE: ${{ runner.temp }}/github-oidc.jwt
     steps:
       - name: Get GitHub OIDC token
         shell: bash
@@ -45,13 +59,13 @@ jobs:
             exit 1
           fi
           echo "::add-mask::$token"
-          printf '%s' "$token" > /tmp/github-oidc.jwt
-          chmod 600 /tmp/github-oidc.jwt
-          echo "OIDC token written to /tmp/github-oidc.jwt"
+          printf '%s' "$token" > "$ANTHROPIC_IDENTITY_TOKEN_FILE"
+          chmod 600 "$ANTHROPIC_IDENTITY_TOKEN_FILE"
+          echo "OIDC token written to $ANTHROPIC_IDENTITY_TOKEN_FILE"
           python3 - <<'PY'
-          import base64, json
+          import base64, json, os
           from pathlib import Path
-          token = Path('/tmp/github-oidc.jwt').read_text().strip()
+          token = Path(os.environ['ANTHROPIC_IDENTITY_TOKEN_FILE']).read_text().strip()
           payload = token.split('.')[1]
           payload += '=' * (-len(payload) % 4)
           claims = json.loads(base64.urlsafe_b64decode(payload.encode()))
@@ -60,7 +74,7 @@ jobs:
           print(json.dumps({k: claims.get(k) for k in keep if k in claims}, indent=2))
           PY
 
-      - name: Exchange JWT for Anthropic access token
+      - name: Exchange JWT for Anthropic access token directly
         id: exchange
         shell: bash
         run: |
@@ -70,7 +84,7 @@ jobs:
           from pathlib import Path
           print(json.dumps({
               "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
-              "assertion": Path("/tmp/github-oidc.jwt").read_text(),
+              "assertion": Path(os.environ['ANTHROPIC_IDENTITY_TOKEN_FILE']).read_text(),
               "federation_rule_id": os.environ["ANTHROPIC_FEDERATION_RULE_ID"],
               "organization_id": os.environ["ANTHROPIC_ORGANIZATION_ID"],
               "service_account_id": os.environ["ANTHROPIC_SERVICE_ACCOUNT_ID"],
@@ -78,7 +92,7 @@ jobs:
           PY
           )
 
-          response_file=/tmp/anthropic-token-response.json
+          response_file="$RUNNER_TEMP/anthropic-token-response.json"
           http_code=$(curl -sS -o "$response_file" -w '%{http_code}' \
             -X POST https://api.anthropic.com/v1/oauth/token \
             -H "Content-Type: application/json" \
@@ -104,17 +118,17 @@ jobs:
             exit 1
           fi
 
-          printf '%s' "$access_token" > /tmp/anthropic-access-token
-          chmod 600 /tmp/anthropic-access-token
+          printf '%s' "$access_token" > "$RUNNER_TEMP/anthropic-access-token"
+          chmod 600 "$RUNNER_TEMP/anthropic-access-token"
           echo "exchange_ok=true" >> "$GITHUB_OUTPUT"
 
-      - name: Optional Claude smoke test
-        if: ${{ inputs.run_smoke_test == 'true' }}
+      - name: Direct Claude smoke test
+        if: ${{ inputs.run_direct_smoke_test == 'true' }}
         shell: bash
         run: |
           set -euo pipefail
-          access_token=$(cat /tmp/anthropic-access-token)
-          response_file=/tmp/anthropic-message-response.json
+          access_token=$(cat "$RUNNER_TEMP/anthropic-access-token")
+          response_file="$RUNNER_TEMP/anthropic-message-response.json"
           http_code=$(curl -sS -o "$response_file" -w '%{http_code}' \
             -X POST https://api.anthropic.com/v1/messages \
             -H "Authorization: Bearer ${access_token}" \
@@ -126,6 +140,41 @@ jobs:
           echo "HTTP status: $http_code"
           jq . "$response_file"
           if [[ "$http_code" != 2* ]]; then
-            echo "Claude smoke test failed" >&2
+            echo "Claude direct smoke test failed" >&2
             exit 1
           fi
+
+      - name: Check out Hermes ref
+        if: ${{ inputs.run_hermes_e2e == 'true' }}
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.hermes_ref }}
+
+      - name: Install Hermes from checkout
+        if: ${{ inputs.run_hermes_e2e == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install --upgrade pip
+          python3 -m pip install -e .
+          hermes auth add anthropic --help | grep -E 'wif|federation-rule-id|identity-token-file'
+
+      - name: Hermes auth WIF and chat E2E
+        if: ${{ inputs.run_hermes_e2e == 'true' }}
+        shell: bash
+        env:
+          ANTHROPIC_API_KEY: ""
+        run: |
+          set -euo pipefail
+          mkdir -p "$HERMES_HOME"
+          hermes auth add anthropic --type wif \
+            --federation-rule-id "$ANTHROPIC_FEDERATION_RULE_ID" \
+            --organization-id "$ANTHROPIC_ORGANIZATION_ID" \
+            --service-account-id "$ANTHROPIC_SERVICE_ACCOUNT_ID" \
+            --identity-token-file "$ANTHROPIC_IDENTITY_TOKEN_FILE"
+
+          echo "Hermes auth status for anthropic:"
+          hermes auth status anthropic || hermes auth list anthropic || true
+
+          hermes chat --provider anthropic -m "${{ inputs.model }}" -q "Reply with only: WIF OK" | tee "$RUNNER_TEMP/hermes-chat.out"
+          grep -q "WIF OK" "$RUNNER_TEMP/hermes-chat.out"
