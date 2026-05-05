@@ -43,8 +43,8 @@ jobs:
       ANTHROPIC_ORGANIZATION_ID: 4ffd071c-2a30-48ac-872f-24554fede34b
       ANTHROPIC_SERVICE_ACCOUNT_ID: svac_01LApMkSXS9TdaMfcR7LFXpH
       ANTHROPIC_FEDERATION_RULE_ID: fdrl_019iNg9SddG3pXtoiLgtKFUz
-      HERMES_HOME: ${{ runner.temp }}/hermes-home
-      ANTHROPIC_IDENTITY_TOKEN_FILE: ${{ runner.temp }}/github-oidc.jwt
+      HERMES_HOME: /tmp/hermes-home
+      ANTHROPIC_IDENTITY_TOKEN_FILE: /tmp/github-oidc.jwt
     steps:
       - name: Get GitHub OIDC token
         shell: bash
