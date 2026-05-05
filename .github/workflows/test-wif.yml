@@ -159,6 +159,25 @@ jobs:
           python3 -m pip install -e .
           hermes auth add anthropic --help | grep -E 'wif|federation-rule-id|identity-token-file'
 
+      - name: Refresh GitHub OIDC token for Hermes E2E
+        if: ${{ inputs.run_hermes_e2e == 'true' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Anthropic appears to reject reusing the same JWT assertion after an exchange.
+          # Generate a fresh GitHub OIDC token for the Hermes CLI E2E path.
+          response=$(curl -fsSL \
+            -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=${{ inputs.audience }}")
+          token=$(jq -r '.value' <<<"$response")
+          if [ -z "$token" ] || [ "$token" = "null" ]; then
+            echo "GitHub did not return a fresh OIDC token" >&2
+            exit 1
+          fi
+          echo "::add-mask::$token"
+          printf '%s' "$token" > "$ANTHROPIC_IDENTITY_TOKEN_FILE"
+          chmod 600 "$ANTHROPIC_IDENTITY_TOKEN_FILE"
+
       - name: Hermes auth WIF and chat E2E
         if: ${{ inputs.run_hermes_e2e == 'true' }}
         shell: bash
@@ -177,4 +196,8 @@ jobs:
           hermes auth status anthropic || hermes auth list anthropic || true
 
           hermes chat --provider anthropic -m "${{ inputs.model }}" -q "Reply with only: WIF OK" | tee "$RUNNER_TEMP/hermes-chat.out"
+          if grep -q "HTTP Error\|Unauthorized\|Authentication failed" "$RUNNER_TEMP/hermes-chat.out"; then
+            echo "Hermes chat reported an auth error" >&2
+            exit 1
+          fi
           grep -q "WIF OK" "$RUNNER_TEMP/hermes-chat.out"
